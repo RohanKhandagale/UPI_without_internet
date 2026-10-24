@@ -32,7 +32,7 @@ The repository includes hybrid cryptography, a virtual network simulator, idempo
 - Python 3.10 or newer
 - pip
 
-No Java, Maven, Redis, or external database is required. SQLite is used for the local demo ledger.
+The Python backend requires no Java, Maven, Redis, or external database; SQLite is used for the local demo ledger. Building the separate Android BLE app requires Android Studio, an Android SDK, and a compatible JDK/Gradle setup.
 
 ### Windows PowerShell
 ```powershell

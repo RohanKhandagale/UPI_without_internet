@@ -403,6 +403,7 @@ class MainActivity : Activity() {
                     if (!packet.has(it)) throw IllegalArgumentException("missing_$it")
                 }
                 enqueuePacket(jsonText)
+                runOnUiThread { packetInput.setText(jsonText) }
                 receiveChunks.clear()
                 receiveTotal = -1
                 status("Received and queued encrypted packet ${packet.getString("packetId")}.")

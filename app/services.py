@@ -6,16 +6,16 @@ import uuid
 from datetime import datetime, timezone
 from .crypto import HybridCrypto
 from .database import Database
-from .mesh import MeshSimulator
-from .models import MeshPacket
+from .network import NetworkSimulator
+from .models import NetworkPacket
 
-MAX_PACKET_AGE_SECONDS = int(os.getenv("UPI_MESH_MAX_PACKET_AGE_SECONDS", "86400"))
+MAX_PACKET_AGE_SECONDS = int(os.getenv("UPI_NETWORK_MAX_PACKET_AGE_SECONDS", "86400"))
 
-class MeshApplication:
-    def __init__(self, db: Database | None = None, crypto: HybridCrypto | None = None, mesh: MeshSimulator | None = None):
+class NetworkApplication:
+    def __init__(self, db: Database | None = None, crypto: HybridCrypto | None = None, network: NetworkSimulator | None = None):
         self.db = db or Database()
         self.crypto = crypto or HybridCrypto()
-        self.mesh = mesh or MeshSimulator()
+        self.network = network or NetworkSimulator()
 
     def create_packet(self, sender: str, receiver: str, amount: float, pin: str, ttl: int, start_device: str):
         if sender == receiver:
@@ -29,8 +29,8 @@ class MeshApplication:
         instruction = {"senderVpa": sender, "receiverVpa": receiver, "amount": round(float(amount), 2),
                        "pinHash": hashlib.sha256(pin.encode()).hexdigest(), "nonce": str(uuid.uuid4()), "signedAt": now_ms}
         ciphertext = self.crypto.encrypt(instruction)
-        packet = MeshPacket(packetId=str(uuid.uuid4()), ttl=ttl, createdAt=now_ms, ciphertext=ciphertext)
-        self.mesh.inject(start_device, packet)
+        packet = NetworkPacket(packetId=str(uuid.uuid4()), ttl=ttl, createdAt=now_ms, ciphertext=ciphertext)
+        self.network.inject(start_device, packet)
         return {"packetId": packet.packetId, "ttl": packet.ttl, "injectedAt": now_ms,
                 "ciphertextPreview": ciphertext[:52] + "...", "ciphertext": ciphertext}
 
@@ -74,7 +74,7 @@ class MeshApplication:
                 return {"outcome": "DUPLICATE_DROPPED", "packetHash": packet_hash, "reason": None, "transactionId": None}
             raise
 
-    def ingest(self, packet: MeshPacket, bridge_node_id: str, hop_count: int = 0):
+    def ingest(self, packet: NetworkPacket, bridge_node_id: str, hop_count: int = 0):
         packet_hash = self.crypto.hash_ciphertext(packet.ciphertext)
         if not self.claim(packet_hash):
             return {"outcome": "DUPLICATE_DROPPED", "packetHash": packet_hash, "reason": None, "transactionId": None}
@@ -95,7 +95,7 @@ class MeshApplication:
     def flush_bridges(self):
         results = []
         attempted = 0
-        for bridge_id, packets in self.mesh.bridge_packets():
+        for bridge_id, packets in self.network.bridge_packets():
             for packet in packets:
                 attempted += 1
                 result = self.ingest(packet, bridge_id, 0)

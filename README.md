@@ -4,7 +4,7 @@ A Python/FastAPI backend demo for deferred payment instructions relayed between 
 
 > **Safety note:** This is an educational simulation only. It does not connect to UPI, NPCI, a bank, or real accounts. Never use real PINs or payment data. BLE transport does not make a payment final while offline; the backend's ledger is a demo ledger.
 
-The repository includes hybrid cryptography, a virtual network simulator, idempotency and settlement tests, plus an Android BLE transport prototype. In this first BLE milestone, a packet must be pasted into the mobile app; offline creation/encryption of the payment instruction on the phone is not yet implemented.
+The repository includes hybrid cryptography, a virtual network simulator, idempotency and settlement tests, plus an Android app prototype that can cache the backend public key, create an encrypted demo instruction offline, relay packets over physical BLE, and upload them later. Multi-hop forwarding and production-grade payment controls remain incomplete.
 
 ## Table of contents
 
@@ -101,7 +101,7 @@ Backend (FastAPI)
 - **Python dashboard:** its virtual devices remain Python objects in one process; dashboard gossip does not use a radio.
 - **Android BLE prototype:** `android-ble/` uses Android BLE GATT advertising, scanning, connecting, and chunked writes to move packet JSON between physical Android phones. Intermediaries store and forward the encrypted packet without decrypting it.
 - **Bridge upload:** the mobile app can POST queued packets to `/api/bridge/ingest` over HTTPS when that phone has internet access.
-- **Still not implemented:** phone-side offline payment composition/encryption, robust multi-hop auto-forwarding, background BLE service, bridge authentication, bank consensus, or real UPI integration. The current app is a first transport milestone and needs testing on physical devices. SQLite claims coordinate requests sharing the same local DB file; multi-host deployments need shared coordination and database uniqueness.
+- **Still not implemented:** robust automatic multi-hop forwarding, a background BLE service, bridge authentication, bank consensus, or real UPI integration. The current app is a prototype and needs testing on physical devices. SQLite claims coordinate requests sharing the same local DB file; multi-host deployments need shared coordination and database uniqueness.
 
 ## Physical Android BLE transport prototype
 

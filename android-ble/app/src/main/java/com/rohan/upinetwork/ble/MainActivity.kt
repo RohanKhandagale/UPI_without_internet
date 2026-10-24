@@ -36,8 +36,18 @@ import org.json.JSONObject
 import java.io.BufferedOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.KeyFactory
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.spec.MGF1ParameterSpec
+import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
 import java.util.concurrent.Executors
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.OAEPParameterSpec
+import javax.crypto.spec.PSource
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Real BLE transport prototype. It relays encrypted NetworkPacket JSON without decrypting it.
@@ -49,6 +59,7 @@ class MainActivity : Activity() {
         private val PACKET_CHAR_UUID: UUID = UUID.fromString("e6c40002-7a2b-4b0b-9d2a-2f3f8f0a1000")
         private const val PREFS = "offline_ble_queue"
         private const val QUEUE_KEY = "packets"
+        private const val SERVER_KEY = "server_public_key"
         private const val PERMISSION_REQUEST = 41
         // Default ATT MTU is 23 bytes, leaving 20 bytes for a characteristic value.
         private const val CHUNK_BYTES = 16
@@ -58,6 +69,11 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var packetInput: EditText
     private lateinit var serverUrlInput: EditText
+    private lateinit var senderInput: EditText
+    private lateinit var receiverInput: EditText
+    private lateinit var amountInput: EditText
+    private lateinit var pinInput: EditText
+    private lateinit var ttlInput: EditText
     private var gattServer: BluetoothGattServer? = null
     private var advertiserCallback: AdvertiseCallback? = null
     private var scannerCallback: ScanCallback? = null
@@ -102,12 +118,24 @@ class MainActivity : Activity() {
             setText("")
         }
         content.addView(packetInput)
+        senderInput = EditText(this).apply { hint = "Sender VPA (demo account)"; setText("alice@demo"); setSingleLine(true) }
+        receiverInput = EditText(this).apply { hint = "Receiver VPA (demo account)"; setText("bob@demo"); setSingleLine(true) }
+        amountInput = EditText(this).apply { hint = "Amount (demo ledger only)"; setText("10.00"); inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setSingleLine(true) }
+        pinInput = EditText(this).apply { hint = "4-digit demo PIN (not a real banking PIN)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD; setSingleLine(true) }
+        ttlInput = EditText(this).apply { hint = "Packet TTL (1–20)"; setText("5"); inputType = android.text.InputType.TYPE_CLASS_NUMBER; setSingleLine(true) }
+        content.addView(senderInput)
+        content.addView(receiverInput)
+        content.addView(amountInput)
+        content.addView(pinInput)
+        content.addView(ttlInput)
         serverUrlInput = EditText(this).apply {
             hint = "Backend HTTPS base URL, e.g. https://your-service.example.com"
             setSingleLine(true)
             setText("https://your-service.example.com")
         }
         content.addView(serverUrlInput)
+        content.addView(button("0a. Fetch/cache backend public key (requires internet)") { refreshServerKey() })
+        content.addView(button("0b. Create encrypted packet offline (uses cached key)") { createEncryptedPacketOffline() })
         content.addView(button("1. Start relay (advertise + listen)") { startRelay() })
         content.addView(button("2. Scan nearby relay and send packet") { scanAndSend() })
         content.addView(button("3. Upload queued packets (bridge with internet)") { uploadQueuedPackets() })
@@ -259,6 +287,114 @@ class MainActivity : Activity() {
         scannerCallback = callback
         scanner.startScan(listOf(filter), settings, callback)
         status("Scanning for nearby phones running this BLE relay app…")
+    }
+
+
+    private fun refreshServerKey() {
+        val base = serverUrlInput.text.toString().trim().trimEnd('/')
+        if (!base.startsWith("https://")) {
+            status("Enter the backend HTTPS URL before fetching the public key.")
+            return
+        }
+        status("Fetching the backend public key…")
+        executor.execute {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = URL("$base/api/server-key").openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+                val code = connection.responseCode
+                if (code !in 200..299) throw IllegalStateException("HTTP_$code")
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val key = JSONObject(response).getString("publicKey")
+                // Validate the key format before saving it for offline use.
+                KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(Base64.decode(key, Base64.DEFAULT)))
+                getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(SERVER_KEY, key).apply()
+                status("Backend public key cached. You can now compose a demo packet while offline.")
+            } catch (ex: Exception) {
+                status("Could not cache server key: ${ex.message}")
+            } finally {
+                connection?.disconnect()
+            }
+        }
+    }
+
+    private fun createEncryptedPacketOffline() {
+        try {
+            val sender = senderInput.text.toString().trim()
+            val receiver = receiverInput.text.toString().trim()
+            val amount = amountInput.text.toString().trim().toDoubleOrNull()
+            val pin = pinInput.text.toString()
+            val ttl = ttlInput.text.toString().toIntOrNull() ?: 5
+            if (sender.isBlank() || receiver.isBlank() || sender == receiver) {
+                status("Enter different sender and receiver demo VPAs.")
+                return
+            }
+            if (amount == null || amount <= 0.0 || amount > 1000000.0) {
+                status("Enter a valid demo amount greater than 0 and at most 1,000,000.")
+                return
+            }
+            if (!pin.matches(Regex("\\d{4}"))) {
+                status("Enter exactly four digits for the demo PIN. Never use a real banking PIN.")
+                return
+            }
+            if (ttl !in 1..20) {
+                status("TTL must be between 1 and 20.")
+                return
+            }
+            val publicKeyB64 = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(SERVER_KEY, null)
+            if (publicKeyB64.isNullOrBlank()) {
+                status("No cached server key. Connect once and tap Fetch/cache backend public key first.")
+                return
+            }
+            val now = System.currentTimeMillis()
+            val instruction = JSONObject()
+                .put("senderVpa", sender)
+                .put("receiverVpa", receiver)
+                .put("amount", Math.round(amount * 100.0) / 100.0)
+                .put("pinHash", sha256Hex(pin.toByteArray(Charsets.UTF_8)))
+                .put("nonce", UUID.randomUUID().toString())
+                .put("signedAt", now)
+            val plaintext = instruction.toString().toByteArray(Charsets.UTF_8)
+
+            val aesKey = ByteArray(32)
+            val iv = ByteArray(12)
+            SecureRandom().nextBytes(aesKey)
+            SecureRandom().nextBytes(iv)
+            val aesCipher = Cipher.getInstance("AES/GCM/NoPadding")
+            aesCipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, iv))
+            val encryptedPayload = aesCipher.doFinal(plaintext)
+
+            val publicKey = KeyFactory.getInstance("RSA").generatePublic(
+                X509EncodedKeySpec(Base64.decode(publicKeyB64, Base64.DEFAULT))
+            )
+            val rsaCipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+            rsaCipher.init(
+                Cipher.ENCRYPT_MODE,
+                publicKey,
+                OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT)
+            )
+            val wrappedKey = rsaCipher.doFinal(aesKey)
+            val wire = wrappedKey + iv + encryptedPayload
+            val ciphertext = Base64.encodeToString(wire, Base64.NO_WRAP)
+            val packet = JSONObject()
+                .put("packetId", UUID.randomUUID().toString())
+                .put("ttl", ttl)
+                .put("createdAt", now)
+                .put("ciphertext", ciphertext)
+            val packetJson = packet.toString()
+            packetInput.setText(packetJson)
+            enqueuePacket(packetJson)
+            pinInput.setText("")
+            status("Encrypted demo packet created offline and saved to this phone's queue. It is not settled yet.")
+        } catch (ex: Exception) {
+            status("Could not create encrypted packet: ${ex.message}")
+        }
+    }
+
+    private fun sha256Hex(value: ByteArray): String {
+        return MessageDigest.getInstance("SHA-256").digest(value).joinToString("") { "%02x".format(it) }
     }
 
     private fun scanAndSend() {

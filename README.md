@@ -54,7 +54,7 @@ python run.py
 
 Open **http://127.0.0.1:8080** for the dashboard. Interactive API docs: **http://127.0.0.1:8080/docs**. Stop with `Ctrl+C`.
 
-The first run creates `upi_network.db` and seeds Alice, Bob, Carol, and Dave with demo balances. The RSA key pair is generated in memory at startup; restarting the app creates a new pair. This key lifecycle is for demonstration only.
+The first run creates `upi_network.db`, seeds demo accounts, and creates `data/server_private_key.pem` for the backend RSA key. The private-key file is ignored by Git. Keep this file on persistent storage across backend restarts or cached mobile public keys will stop working. Set `UPI_NETWORK_PRIVATE_KEY_PATH` to a secure persistent path in your environment. This local unencrypted key file is for the demo only; production should use a managed KMS/HSM.
 
 ### Run tests
 ```bash
@@ -113,10 +113,11 @@ This first mobile milestone uses native Android BLE APIs for the radio layer and
 2. Let Android Studio install the compatible Gradle/Android SDK components and sync the project.
 3. Install and run the app on **two physical Android phones** with Bluetooth enabled. BLE peripheral/advertising support varies by device.
 4. Grant the requested nearby-device/Bluetooth permissions and keep both apps open.
-5. Tap **Start relay** on both phones. The receiver advertises a GATT service; the sender scans for that service.
-6. Paste a complete encrypted packet JSON into the sender app, for example the full packet object returned by the existing demo API. Tap **Scan nearby relay and send packet**. The app sends the JSON in small GATT chunks to respect BLE's default ATT payload size.
-7. The receiving phone validates the packet envelope and stores it in a local queue. It does not decrypt the ciphertext.
-8. On the receiving/bridge phone, enter the deployed HTTPS base URL for the FastAPI backend and tap **Upload queued packets** when internet is available. The app posts each queued packet to `/api/bridge/ingest`.
+5. While online, enter the deployed HTTPS backend URL and tap **Fetch/cache backend public key**. Do this before the sender loses internet; the app stores the public key locally.
+6. The sender can now turn off internet, enter demo sender/receiver VPAs, amount and a four-digit **demo-only** PIN, then tap **Create encrypted packet offline**. The phone generates a fresh AES-256 key and IV, encrypts the instruction with AES-GCM, wraps the AES key with the cached RSA public key using OAEP/SHA-256, and saves the packet to its local queue. The seeded demo accounts include `alice@demo`, `bob@demo`, `carol@demo` and `dave@demo`.
+7. Tap **Start relay** on both phones. The receiver advertises a GATT service; the sender scans for it. Tap **Scan nearby relay and send packet** to transfer the packet in small GATT chunks.
+8. The receiving phone validates the packet envelope and stores it in a local queue. It does not decrypt the ciphertext. To relay another hop, use the received packet now loaded in the input and tap send on a phone connected to another relay.
+9. On the receiving/bridge phone, enter the deployed HTTPS base URL for FastAPI and tap **Upload queued packets** when internet is available. The app posts each queued packet to `/api/bridge/ingest`.
 
 Expected packet envelope:
 
@@ -241,7 +242,7 @@ Run `python -m pytest -q`.
 |---|---|
 | SQLite local database | PostgreSQL/MySQL with carefully designed transactions and replicas |
 | SQLite idempotency primary key | Redis `SET NX EX` or another shared atomic claim, plus unique ledger constraint |
-| RSA key regenerated at startup | Managed key lifecycle/HSM/KMS; provision and rotate keys safely |
+| RSA key stored in a local demo PEM file | Managed key lifecycle/HSM/KMS; provision and rotate keys safely; use persistent storage for the demo key |
 | Python backend simulates sender | Separate mobile client with secure public-key provisioning |
 | Virtual gossip objects | Android BLE GATT transport prototype exists; robust automatic multi-hop forwarding and durable background service remain future work |
 | No bridge authentication | Mutual TLS or signed bridge credentials, authorization and rate limits |

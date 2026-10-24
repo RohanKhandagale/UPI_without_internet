@@ -3,18 +3,18 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from app.crypto import HybridCrypto
 from app.database import Database
-from app.mesh import MeshSimulator
-from app.models import MeshPacket
-from app.services import MeshApplication
+from app.network import NetworkSimulator
+from app.models import NetworkPacket
+from app.services import NetworkApplication
 
 def make_app(tmp_path):
-    return MeshApplication(Database(str(tmp_path / "test.db")), HybridCrypto(), MeshSimulator())
+    return NetworkApplication(Database(str(tmp_path / "test.db")), HybridCrypto(), NetworkSimulator())
 
 def make_packet(app, **overrides):
     instruction = {"senderVpa": "alice@demo", "receiverVpa": "bob@demo", "amount": 100.0,
                    "pinHash": "not-used-in-demo", "nonce": "nonce-test", "signedAt": int(time.time() * 1000)}
     instruction.update(overrides)
-    return MeshPacket(packetId="packet-test", ttl=5, createdAt=int(time.time() * 1000), ciphertext=app.crypto.encrypt(instruction))
+    return NetworkPacket(packetId="packet-test", ttl=5, createdAt=int(time.time() * 1000), ciphertext=app.crypto.encrypt(instruction))
 
 def test_encrypt_decrypt_round_trip(tmp_path):
     app = make_app(tmp_path)
@@ -46,6 +46,6 @@ def test_same_packet_delivered_concurrently_settles_once(tmp_path):
 def test_gossip_propagates_packets(tmp_path):
     app = make_app(tmp_path)
     app.create_packet("alice@demo", "bob@demo", 10, "1234", 5, "phone-alice")
-    state = app.mesh.gossip_round()
+    state = app.network.gossip_round()
     assert state["transfers"] > 0
-    assert all(d["packetCount"] == 1 for d in app.mesh.state(0)["devices"])
+    assert all(d["packetCount"] == 1 for d in app.network.state(0)["devices"])

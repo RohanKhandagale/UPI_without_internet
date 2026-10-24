@@ -1,10 +1,10 @@
 # UPI Offline Network — Python Demo
 
-A Python/FastAPI port of the **UPI Offline Network** teaching demo. It simulates deferred payments moving phone-to-phone over a Bluetooth-style gossip network while devices are offline; an internet-connected bridge later uploads the encrypted packet to the backend. The backend decrypts, deduplicates, checks freshness, and settles against a local demo ledger.
+A Python/FastAPI backend demo for deferred payment instructions relayed between offline phones. The Python dashboard still includes a virtual gossip simulator. The new `android-ble/` prototype adds real Android Bluetooth Low Energy (BLE) packet transfer and HTTPS bridge upload, while leaving backend processing in Python.
 
-> **Safety note:** This is a simulation only. It does not connect to UPI, NPCI, a bank, real accounts, or Bluetooth hardware. Never use real PINs or payment data. It demonstrates deferred settlement, not guaranteed real-time offline payments.
+> **Safety note:** This is an educational simulation only. It does not connect to UPI, NPCI, a bank, or real accounts. Never use real PINs or payment data. BLE transport does not make a payment final while offline; the backend's ledger is a demo ledger.
 
-This repository keeps the original project's core behaviour and API flow while replacing Java/Spring Boot syntax with Python/FastAPI. It includes the interactive dashboard, hybrid cryptography, a virtual network gossip simulator, an idempotency gate, transactional ledger updates, and concurrency/tamper tests.
+The repository includes hybrid cryptography, a virtual network simulator, idempotency and settlement tests, plus an Android BLE transport prototype. In this first BLE milestone, a packet must be pasted into the mobile app; offline creation/encryption of the payment instruction on the phone is not yet implemented.
 
 ## Table of contents
 
@@ -66,8 +66,8 @@ python -m pytest -q
 ### Step 1 — Compose a payment
 Choose sender, receiver, amount, and a four-digit demo PIN, then click **Inject into Network**. The backend simulates the sender phone, creates a unique nonce and timestamp, hashes the PIN for the demonstration payload, encrypts the instruction, wraps it in a packet with TTL 5, and places it on `phone-alice` (or the selected start device).
 
-### Step 2 — Run gossip rounds
-Click **Run Gossip Round**. Each device advertises packets it holds to other virtual devices. Packets with TTL 0 are not forwarded; a newly received copy has its TTL decremented. In this simulator, every device is considered in range. Real Bluetooth discovery, pairing, radio range, and mobile OS restrictions are not implemented.
+### Step 2 — Run virtual gossip rounds
+Click **Run Gossip Round**. Each virtual device copies packets to other simulated devices. This dashboard simulation assumes every device is in range; it is separate from the Android BLE transport prototype described below.
 
 ### Step 3 — Bridge uploads
 Click **Bridges Upload to Backend**. `phone-bridge` is seeded as the only device with internet. It submits packets to `/api/bridge/ingest`. The backend hashes ciphertext, atomically claims the hash, decrypts, checks the signed timestamp, then applies debit/credit and inserts the ledger row in one SQLite transaction.
@@ -98,11 +98,38 @@ Backend (FastAPI)
 
 ### How connection and communication work
 
-- **Current demo:** all five devices are Python objects in one process. No radio or socket connection exists between virtual phones. A gossip round copies a packet to each simulated neighbour that does not already hold it.
-- **Offline communication:** packets are encrypted before entering the simulated network. Intermediaries store and forward opaque ciphertext without needing internet access.
-- **Bridge communication:** a device marked `hasInternet=true` submits the packet to the HTTP API. In this laptop demo, the flush button calls the backend locally; a real bridge would use HTTPS when connectivity returns.
-- **Distributed-system properties shown:** store-and-forward propagation, TTL-limited forwarding, at-least-once delivery tolerance, ciphertext-based deduplication, concurrency-safe claim, unique ledger constraint, and atomic debit/credit.
-- **Not implemented:** actual BLE/Wi-Fi Direct networking, discovery, network partitions across backend machines, durable queues on phones, bridge authentication, or bank consensus. SQLite claims are coordinated for requests sharing the same local DB file; multiple independent servers need shared coordination such as Redis plus database uniqueness.
+- **Python dashboard:** its virtual devices remain Python objects in one process; dashboard gossip does not use a radio.
+- **Android BLE prototype:** `android-ble/` uses Android BLE GATT advertising, scanning, connecting, and chunked writes to move packet JSON between physical Android phones. Intermediaries store and forward the encrypted packet without decrypting it.
+- **Bridge upload:** the mobile app can POST queued packets to `/api/bridge/ingest` over HTTPS when that phone has internet access.
+- **Still not implemented:** phone-side offline payment composition/encryption, robust multi-hop auto-forwarding, background BLE service, bridge authentication, bank consensus, or real UPI integration. The current app is a first transport milestone and needs testing on physical devices. SQLite claims coordinate requests sharing the same local DB file; multi-host deployments need shared coordination and database uniqueness.
+
+## Physical Android BLE transport prototype
+
+This first mobile milestone uses native Android BLE APIs for the radio layer and keeps the backend in Python/FastAPI. Android requires BLE permissions and supports separate central/client and peripheral/server roles; the app implements both so a phone can advertise a packet service and also scan/connect to another phone.
+
+### Open and run
+
+1. Open the repository's `android-ble/` folder in Android Studio.
+2. Let Android Studio install the compatible Gradle/Android SDK components and sync the project.
+3. Install and run the app on **two physical Android phones** with Bluetooth enabled. BLE peripheral/advertising support varies by device.
+4. Grant the requested nearby-device/Bluetooth permissions and keep both apps open.
+5. Tap **Start relay** on both phones. The receiver advertises a GATT service; the sender scans for that service.
+6. Paste a complete encrypted packet JSON into the sender app, for example the full packet object returned by the existing demo API. Tap **Scan nearby relay and send packet**. The app sends the JSON in small GATT chunks to respect BLE's default ATT payload size.
+7. The receiving phone validates the packet envelope and stores it in a local queue. It does not decrypt the ciphertext.
+8. On the receiving/bridge phone, enter the deployed HTTPS base URL for the FastAPI backend and tap **Upload queued packets** when internet is available. The app posts each queued packet to `/api/bridge/ingest`.
+
+Expected packet envelope:
+
+```json
+{
+  "packetId": "a-unique-packet-id",
+  "ttl": 5,
+  "createdAt": 1730000000000,
+  "ciphertext": "base64-encoded-encrypted-payload"
+}
+```
+
+Use only demo data. This initial prototype does **not** yet create and encrypt a new payment on a phone that has never had internet, automatically relay a packet through an arbitrary chain of phones, or guarantee background operation. It also does not guarantee settlement: an HTTP response of `SETTLED` refers only to this repository's demo ledger. Physical-device builds have not been executed in this repository environment, so test the app on your devices before relying on it.
 
 ## The three hard problems
 
@@ -143,6 +170,9 @@ UPI_without_internet/
 │       └── dashboard.html
 ├── tests/
 │   └── test_network.py     # crypto, tamper, concurrency and gossip tests
+├── android-ble/            # Android BLE transport prototype (Kotlin; backend remains Python)
+│   ├── app/src/main/AndroidManifest.xml
+│   └── app/src/main/java/com/rohan/upinetwork/ble/MainActivity.kt
 ├── .env.example
 ├── Dockerfile
 ├── compose.yaml
@@ -213,7 +243,7 @@ Run `python -m pytest -q`.
 | SQLite idempotency primary key | Redis `SET NX EX` or another shared atomic claim, plus unique ledger constraint |
 | RSA key regenerated at startup | Managed key lifecycle/HSM/KMS; provision and rotate keys safely |
 | Python backend simulates sender | Separate mobile client with secure public-key provisioning |
-| Virtual gossip objects | BLE GATT or Wi-Fi Direct, discovery, retry and durable queues |
+| Virtual gossip objects | Android BLE GATT transport prototype exists; robust automatic multi-hop forwarding and durable background service remain future work |
 | No bridge authentication | Mutual TLS or signed bridge credentials, authorization and rate limits |
 | Demo balances and PIN field | Real account systems and bank-approved authentication; never trust a client-provided PIN hash |
 | No monitoring/rate limits | Structured logs, alerts, abuse detection and audit trail |
@@ -222,7 +252,7 @@ Run `python -m pytest -q`.
 
 1. **The receiver cannot know the sender has sufficient funds while every device is offline.** This is a deferred instruction, not a guaranteed settled transfer. Settlement may be rejected when the packet reaches the backend.
 2. **Offline double-spending is not solved.** A sender can create multiple offline instructions against the same apparent balance; the first valid instruction to settle can consume the funds.
-3. **Real Bluetooth network is hard.** Mobile operating systems throttle background BLE; discovery, pairing, retries, battery use, and device compatibility need separate engineering.
+3. **Bluetooth relay is still a prototype.** Foreground BLE packet transfer is implemented in the Android module, but automatic multi-hop forwarding, robust retry/recovery, background operation, and device compatibility need more engineering.
 4. **Privacy metadata remains.** Intermediaries cannot decrypt the payload, but can observe packet existence, timing, and size.
 5. **This is not a real UPI integration.** No NPCI/bank APIs, real account verification, regulatory approvals, or real settlement are included.
 

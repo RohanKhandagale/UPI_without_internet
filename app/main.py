@@ -1,61 +1,97 @@
-from __future__ import annotations
-import hashlib, time, uuid, logging
+"""FastAPI server and REST endpoints for the UPI Offline Mesh demo."""
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
-from app.config import settings
-from app.crypto import HybridCrypto
-from app.mesh import MeshSimulator
-from app.models import MeshPacket, PaymentRequest
-from app.store import init_db, list_accounts, list_transactions, claim_hash, settle, connect
+from .models import MeshPacket, SendRequest
+from .services import MeshApplication
 
-logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s")
-log=logging.getLogger("upi_mesh")
-app=FastAPI(title=settings.app_name,version="1.0.0",description="Educational offline payment mesh simulation")
-crypto=HybridCrypto(); mesh=MeshSimulator()
-@app.on_event("startup")
-def startup(): init_db()
-@app.get("/",response_class=HTMLResponse)
-def dashboard(): return (Path(__file__).parent/"templates"/"dashboard.html").read_text(encoding="utf-8")
+app = FastAPI(title="UPI Offline Mesh — Python Demo", version="1.0.0",
+              description="A teaching simulation of encrypted deferred-settlement payments over a virtual gossip mesh.")
+mesh_app = MeshApplication()
+DASHBOARD = Path(__file__).with_name("templates") / "dashboard.html"
+if not DASHBOARD.exists():
+    DASHBOARD = Path(__file__).with_name("dashboard.html")
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    return DASHBOARD.read_text(encoding="utf-8")
+
+@app.get("/health")
 @app.get("/api/health")
-def health(): return {"status":"ok","mode":"educational_simulation"}
-@app.get("/api/public-key")
-def public_key(): return {"algorithm":"RSA-OAEP-SHA256 + AES-256-GCM","public_key_pem":Path("instance/server_public.pem").read_text()}
-@app.post("/api/payment")
-def create_payment(req:PaymentRequest):
-    if req.sender_vpa==req.receiver_vpa: raise HTTPException(400,"Sender and receiver must differ")
-    instruction={"sender_vpa":req.sender_vpa,"receiver_vpa":req.receiver_vpa,"amount":round(req.amount,2),"pin_hash":hashlib.sha256(req.pin.encode()).hexdigest(),"nonce":str(uuid.uuid4()),"signed_at":int(time.time()*1000)}
-    packet=MeshPacket(packet_id=str(uuid.uuid4()),ttl=req.ttl,created_at=int(time.time()*1000),ciphertext=crypto.encrypt(instruction))
-    try: mesh.inject(req.sender_device_id,packet)
-    except ValueError as e: raise HTTPException(400,str(e))
-    log.info("Packet injected: %s",packet.packet_id[:8]); return packet.model_dump()
-@app.post("/api/mesh/gossip")
-def gossip(): return mesh.gossip_once()
-@app.get("/api/mesh/devices")
-def devices():
-    return [{"device_id":d.device_id,"has_internet":d.has_internet,"packet_count":d.packet_count(),"packets":[{"packet_id":p.packet_id,"ttl":p.ttl} for p in d.packets.values()]} for d in mesh.devices.values()]
-def ingest(packet:MeshPacket,bridge_node_id:str,hop_count:int):
-    packet_hash=crypto.hash_ciphertext(packet.ciphertext)
-    if not claim_hash(packet_hash): return {"outcome":"DUPLICATE_DROPPED","packet_hash":packet_hash,"reason":None,"transaction_id":None}
-    try: instruction=crypto.decrypt(packet.ciphertext)
-    except Exception: return {"outcome":"INVALID","packet_hash":packet_hash,"reason":"decryption_failed","transaction_id":None}
-    age=(int(time.time()*1000)-int(instruction.get("signed_at",0)))/1000
-    if age>settings.packet_max_age_seconds: return {"outcome":"INVALID","packet_hash":packet_hash,"reason":"stale_packet","transaction_id":None}
-    if age < -300: return {"outcome":"INVALID","packet_hash":packet_hash,"reason":"future_dated","transaction_id":None}
-    return {**settle(instruction,packet_hash,bridge_node_id,hop_count),"packet_hash":packet_hash}
-@app.post("/api/bridge/ingest")
-def bridge_ingest(packet:MeshPacket,x_bridge_node_id:str=Header(default="unknown"),x_hop_count:int=Header(default=0,ge=0)):
-    return ingest(packet,x_bridge_node_id,x_hop_count)
-@app.post("/api/mesh/flush")
-def flush_bridges():
-    uploads=mesh.bridge_uploads(); results=[{"bridge_node_id":node,"packet_id":packet.packet_id,**ingest(packet,node,0)} for node,packet in uploads]
-    return {"uploads_attempted":len(uploads),"results":results}
-@app.post("/api/mesh/reset")
-def reset_mesh():
-    mesh.reset()
-    with connect() as c: c.execute("DELETE FROM idempotency")
-    return {"status":"mesh and idempotency cache cleared"}
+def health():
+    return {"status": "ok", "project": "upi-offline-mesh-python"}
+
+@app.get("/api/server-key")
+def server_key():
+    return {"publicKey": mesh_app.crypto.public_key_b64(), "algorithm": "RSA-OAEP-SHA256 + AES-256-GCM"}
+
 @app.get("/api/accounts")
-def accounts(): return list_accounts()
+def accounts():
+    return [{"vpa": r["vpa"], "holderName": r["holder_name"], "holder": r["holder_name"], "balance": r["balance"]}
+            for r in mesh_app.db.rows("SELECT * FROM accounts ORDER BY vpa")]
+
 @app.get("/api/transactions")
-def transactions(): return list_transactions()
+def transactions():
+    rows = mesh_app.db.rows("SELECT * FROM transactions ORDER BY id DESC LIMIT 20")
+    return [{"id": r["id"], "packetHash": r["packet_hash"], "senderVpa": r["sender_vpa"],
+             "receiverVpa": r["receiver_vpa"], "sender_vpa": r["sender_vpa"], "receiver_vpa": r["receiver_vpa"],
+             "amount": r["amount"], "status": r["status"], "bridgeNodeId": r["bridge_node_id"],
+             "bridge_node_id": r["bridge_node_id"], "hopCount": r["hop_count"], "hop_count": r["hop_count"],
+             "settledAt": r["settled_at"], "reason": r["reason"]} for r in rows]
+
+@app.get("/api/mesh/state")
+def mesh_state():
+    cache_size = len(mesh_app.db.rows("SELECT packet_hash FROM idempotency_claims"))
+    return mesh_app.mesh.state(cache_size)
+
+@app.get("/api/mesh/devices")
+def mesh_devices():
+    state = mesh_app.mesh.state(len(mesh_app.db.rows("SELECT packet_hash FROM idempotency_claims")))
+    result = []
+    for device in state["devices"]:
+        packets = mesh_app.mesh.devices[device["deviceId"]].packets.values()
+        result.append({"device_id": device["deviceId"], "has_internet": device["hasInternet"],
+                       "packet_count": device["packetCount"],
+                       "packets": [{"packet_id": p.packetId, "ttl": p.ttl} for p in packets]})
+    return result
+
+@app.post("/api/demo/send")
+def demo_send(request: SendRequest):
+    try:
+        return mesh_app.create_packet(request.senderVpa, request.receiverVpa, request.amount,
+                                      request.pin, request.ttl, request.startDevice)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post("/api/payment")
+def create_payment_compat(payload: dict):
+    """Snake-case alias retained for the repository's original Python dashboard/API."""
+    try:
+        result = mesh_app.create_packet(payload.get("sender_vpa", ""), payload.get("receiver_vpa", ""),
+                                        float(payload.get("amount", 0)), str(payload.get("pin", "")),
+                                        int(payload.get("ttl", 5)), payload.get("sender_device_id", "phone-alice"))
+        return {"packet_id": result["packetId"], "packetId": result["packetId"], "ttl": result["ttl"],
+                "created_at": result["injectedAt"], "createdAt": result["injectedAt"],
+                "ciphertext": result["ciphertext"], "ciphertext_preview": result["ciphertextPreview"]}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post("/api/mesh/gossip")
+def gossip():
+    return mesh_app.mesh.gossip_round()
+
+@app.post("/api/mesh/flush")
+def flush():
+    return mesh_app.flush_bridges()
+
+@app.post("/api/mesh/reset")
+def reset():
+    mesh_app.mesh.reset()
+    mesh_app.db.clear_ledger_and_claims()
+    return {"status": "reset"}
+
+@app.post("/api/bridge/ingest")
+def bridge_ingest(packet: MeshPacket, x_bridge_node_id: str = Header(default="unknown-bridge"),
+                  x_hop_count: int = Header(default=0)):
+    # Demo endpoint only. Production deployments must authenticate bridge identities (e.g. mTLS).
+    return mesh_app.ingest(packet, x_bridge_node_id, max(0, x_hop_count))

@@ -445,10 +445,15 @@ class MainActivity : Activity() {
         nextChunk = 0
         connectedGatt = device.connectGatt(this, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, statusCode: Int, newState: Int) {
-                if (statusCode != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                if (statusCode != BluetoothGatt.GATT_SUCCESS) {
                     transferInProgress = false
                     gatt.close()
-                    status("BLE connection ended (status=$statusCode). Retry the transfer.")
+                    status("BLE connection failed (status=$statusCode). Retry the transfer.")
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    val interrupted = transferInProgress
+                    transferInProgress = false
+                    gatt.close()
+                    if (interrupted) status("BLE disconnected before all chunks were sent. Retry the transfer.")
                 } else if (newState == BluetoothProfile.STATE_CONNECTED) {
                     gatt.requestMtu(247)
                     gatt.discoverServices()

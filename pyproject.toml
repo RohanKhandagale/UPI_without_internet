@@ -1,7 +1,7 @@
 [project]
-name = "upi-offline-mesh"
+name = "upi-offline-network"
 version = "1.1.0"
-description = "Python implementation of an educational offline payment mesh simulation"
+description = "Python implementation of an educational offline payment network simulation"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115,<1.0",

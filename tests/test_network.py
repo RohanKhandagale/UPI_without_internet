@@ -49,3 +49,16 @@ def test_gossip_propagates_packets(tmp_path):
     state = app.network.gossip_round()
     assert state["transfers"] > 0
     assert all(d["packetCount"] == 1 for d in app.network.state(0)["devices"])
+
+
+def test_persisted_server_key_stays_compatible_with_cached_public_key(tmp_path):
+    key_path = tmp_path / "server_private_key.pem"
+    first_instance = HybridCrypto(key_path=key_path)
+    cached_public_key = first_instance.public_key_b64()
+    second_instance = HybridCrypto(key_path=key_path)
+    assert second_instance.public_key_b64() == cached_public_key
+
+    payload = {"senderVpa": "alice@demo", "receiverVpa": "bob@demo", "amount": 12.5,
+               "nonce": "offline-key-test", "signedAt": int(time.time() * 1000)}
+    ciphertext = first_instance.encrypt(payload)
+    assert second_instance.decrypt(ciphertext) == payload

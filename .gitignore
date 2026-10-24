@@ -7,3 +7,5 @@ venv/
 instance/
 upi_network.db
 *.sqlite3
+data/
+*.pem

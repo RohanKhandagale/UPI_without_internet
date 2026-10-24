@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 
-class MeshPacket(BaseModel):
+class NetworkPacket(BaseModel):
     packetId: str
     ttl: int = Field(ge=0, le=255)
     createdAt: int

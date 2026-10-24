@@ -1,10 +1,10 @@
-# UPI Offline Mesh — Python Demo
+# UPI Offline Network — Python Demo
 
-A Python/FastAPI port of the **UPI Offline Mesh** teaching demo. It simulates deferred payments moving phone-to-phone over a Bluetooth-style gossip mesh while devices are offline; an internet-connected bridge later uploads the encrypted packet to the backend. The backend decrypts, deduplicates, checks freshness, and settles against a local demo ledger.
+A Python/FastAPI port of the **UPI Offline Network** teaching demo. It simulates deferred payments moving phone-to-phone over a Bluetooth-style gossip network while devices are offline; an internet-connected bridge later uploads the encrypted packet to the backend. The backend decrypts, deduplicates, checks freshness, and settles against a local demo ledger.
 
 > **Safety note:** This is a simulation only. It does not connect to UPI, NPCI, a bank, real accounts, or Bluetooth hardware. Never use real PINs or payment data. It demonstrates deferred settlement, not guaranteed real-time offline payments.
 
-This repository keeps the original project's core behaviour and API flow while replacing Java/Spring Boot syntax with Python/FastAPI. It includes the interactive dashboard, hybrid cryptography, a virtual mesh gossip simulator, an idempotency gate, transactional ledger updates, and concurrency/tamper tests.
+This repository keeps the original project's core behaviour and API flow while replacing Java/Spring Boot syntax with Python/FastAPI. It includes the interactive dashboard, hybrid cryptography, a virtual network gossip simulator, an idempotency gate, transactional ledger updates, and concurrency/tamper tests.
 
 ## Table of contents
 
@@ -54,7 +54,7 @@ python run.py
 
 Open **http://127.0.0.1:8080** for the dashboard. Interactive API docs: **http://127.0.0.1:8080/docs**. Stop with `Ctrl+C`.
 
-The first run creates `upi_mesh.db` and seeds Alice, Bob, Carol, and Dave with demo balances. The RSA key pair is generated in memory at startup; restarting the app creates a new pair. This key lifecycle is for demonstration only.
+The first run creates `upi_network.db` and seeds Alice, Bob, Carol, and Dave with demo balances. The RSA key pair is generated in memory at startup; restarting the app creates a new pair. This key lifecycle is for demonstration only.
 
 ### Run tests
 ```bash
@@ -64,7 +64,7 @@ python -m pytest -q
 ## The demo flow
 
 ### Step 1 — Compose a payment
-Choose sender, receiver, amount, and a four-digit demo PIN, then click **Inject into Mesh**. The backend simulates the sender phone, creates a unique nonce and timestamp, hashes the PIN for the demonstration payload, encrypts the instruction, wraps it in a packet with TTL 5, and places it on `phone-alice` (or the selected start device).
+Choose sender, receiver, amount, and a four-digit demo PIN, then click **Inject into Network**. The backend simulates the sender phone, creates a unique nonce and timestamp, hashes the PIN for the demonstration payload, encrypts the instruction, wraps it in a packet with TTL 5, and places it on `phone-alice` (or the selected start device).
 
 ### Step 2 — Run gossip rounds
 Click **Run Gossip Round**. Each device advertises packets it holds to other virtual devices. Packets with TTL 0 are not forwarded; a newly received copy has its TTL decremented. In this simulator, every device is considered in range. Real Bluetooth discovery, pairing, radio range, and mobile OS restrictions are not implemented.
@@ -82,7 +82,7 @@ Sender (simulated, offline)
   PaymentInstruction { senderVpa, receiverVpa, amount, pinHash, nonce, signedAt }
       | fresh AES-256 key encrypts JSON with GCM; RSA-OAEP wraps AES key
       v
-  MeshPacket { packetId, ttl, createdAt, ciphertext }
+  NetworkPacket { packetId, ttl, createdAt, ciphertext }
       | virtual gossip rounds; intermediaries see ciphertext only
       v
   phone-alice -> phone-bob / phone-carol / phone-dave -> phone-bridge (internet)
@@ -99,7 +99,7 @@ Backend (FastAPI)
 ### How connection and communication work
 
 - **Current demo:** all five devices are Python objects in one process. No radio or socket connection exists between virtual phones. A gossip round copies a packet to each simulated neighbour that does not already hold it.
-- **Offline communication:** packets are encrypted before entering the simulated mesh. Intermediaries store and forward opaque ciphertext without needing internet access.
+- **Offline communication:** packets are encrypted before entering the simulated network. Intermediaries store and forward opaque ciphertext without needing internet access.
 - **Bridge communication:** a device marked `hasInternet=true` submits the packet to the HTTP API. In this laptop demo, the flush button calls the backend locally; a real bridge would use HTTPS when connectivity returns.
 - **Distributed-system properties shown:** store-and-forward propagation, TTL-limited forwarding, at-least-once delivery tolerance, ciphertext-based deduplication, concurrency-safe claim, unique ledger constraint, and atomic debit/credit.
 - **Not implemented:** actual BLE/Wi-Fi Direct networking, discovery, network partitions across backend machines, durable queues on phones, bridge authentication, or bank consensus. SQLite claims are coordinated for requests sharing the same local DB file; multiple independent servers need shared coordination such as Redis plus database uniqueness.
@@ -137,12 +137,12 @@ UPI_without_internet/
 │   ├── models.py        # Pydantic request/wire models
 │   ├── database.py      # SQLite schema, accounts, transactions and claims
 │   ├── crypto.py        # RSA-OAEP + AES-256-GCM + SHA-256
-│   ├── mesh.py          # virtual devices and gossip protocol
+│   ├── network.py          # virtual devices and gossip protocol
 │   ├── services.py      # packet creation, idempotency, ingestion, settlement
 │   └── templates/
 │       └── dashboard.html
 ├── tests/
-│   └── test_mesh.py     # crypto, tamper, concurrency and gossip tests
+│   └── test_network.py     # crypto, tamper, concurrency and gossip tests
 ├── .env.example
 ├── Dockerfile
 ├── compose.yaml
@@ -161,13 +161,13 @@ UPI_without_internet/
 | `GET` | `/api/server-key` | RSA public key (Base64 DER) |
 | `GET` | `/api/accounts` | Demo balances |
 | `GET` | `/api/transactions` | Last 20 ledger records |
-| `GET` | `/api/mesh/state` | Device state and idempotency count |
-| `GET` | `/api/mesh/devices` | Dashboard-compatible device state |
-| `POST` | `/api/demo/send` | Encrypt payment and inject into mesh |
+| `GET` | `/api/network/state` | Device state and idempotency count |
+| `GET` | `/api/network/devices` | Dashboard-compatible device state |
+| `POST` | `/api/demo/send` | Encrypt payment and inject into network |
 | `POST` | `/api/payment` | Compatibility alias for the Python dashboard |
-| `POST` | `/api/mesh/gossip` | Run one gossip round |
-| `POST` | `/api/mesh/flush` | Upload packets held by internet-enabled bridges |
-| `POST` | `/api/mesh/reset` | Reset mesh, claims, ledger and demo balances |
+| `POST` | `/api/network/gossip` | Run one gossip round |
+| `POST` | `/api/network/flush` | Upload packets held by internet-enabled bridges |
+| `POST` | `/api/network/reset` | Reset network, claims, ledger and demo balances |
 | `POST` | `/api/bridge/ingest` | Ingest one bridge packet |
 
 ### `POST /api/bridge/ingest` request
@@ -222,17 +222,17 @@ Run `python -m pytest -q`.
 
 1. **The receiver cannot know the sender has sufficient funds while every device is offline.** This is a deferred instruction, not a guaranteed settled transfer. Settlement may be rejected when the packet reaches the backend.
 2. **Offline double-spending is not solved.** A sender can create multiple offline instructions against the same apparent balance; the first valid instruction to settle can consume the funds.
-3. **Real Bluetooth mesh is hard.** Mobile operating systems throttle background BLE; discovery, pairing, retries, battery use, and device compatibility need separate engineering.
+3. **Real Bluetooth network is hard.** Mobile operating systems throttle background BLE; discovery, pairing, retries, battery use, and device compatibility need separate engineering.
 4. **Privacy metadata remains.** Intermediaries cannot decrypt the payload, but can observe packet existence, timing, and size.
 5. **This is not a real UPI integration.** No NPCI/bank APIs, real account verification, regulatory approvals, or real settlement are included.
 
-For a portfolio, describe this as **mesh-routed deferred settlement** rather than real-time offline UPI. The encryption, idempotency, replay checks, gossip simulation, and concurrency test are the core educational engineering features.
+For a portfolio, describe this as **network-routed deferred settlement** rather than real-time offline UPI. The encryption, idempotency, replay checks, gossip simulation, and concurrency test are the core educational engineering features.
 
 ## Troubleshooting
 
 - **Module not found:** activate the virtual environment and run `python -m pip install -r requirements.txt`.
-- **Port 8080 is busy:** set `UPI_MESH_PORT=8081` before running.
-- **Database state looks old:** stop the server, back up and remove `upi_mesh.db`, then restart to seed a fresh demo database.
+- **Port 8080 is busy:** set `UPI_NETWORK_PORT=8081` before running.
+- **Database state looks old:** stop the server, back up and remove `upi_network.db`, then restart to seed a fresh demo database.
 - **Tests fail:** run `python -m pytest -vv` and inspect the first failure. Tests use a temporary database.
 
 ## License

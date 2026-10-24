@@ -3,6 +3,8 @@ import base64
 import hashlib
 import json
 import os
+from pathlib import Path
+
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -10,10 +12,37 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 RSA_KEY_BYTES = 256
 IV_BYTES = 12
 
+
 class HybridCrypto:
-    def __init__(self):
-        self._private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    def __init__(self, key_path: str | Path | None = None):
+        # A stable key is needed when an offline phone caches the public key.
+        # Override the path for deployment; production should use a managed KMS/HSM.
+        configured_path = key_path or os.getenv("UPI_NETWORK_PRIVATE_KEY_PATH", "data/server_private_key.pem")
+        self._key_path = Path(configured_path)
+        self._private_key = self._load_or_create_private_key(self._key_path)
         self._public_key = self._private_key.public_key()
+
+    @staticmethod
+    def _load_or_create_private_key(path: Path):
+        if path.exists():
+            return serialization.load_pem_private_key(path.read_bytes(), password=None)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        candidate = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = candidate.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        try:
+            # Exclusive create prevents two starting processes from overwriting each other's key.
+            with path.open("xb") as key_file:
+                key_file.write(pem)
+            if os.name != "nt":
+                path.chmod(0o600)
+            return candidate
+        except FileExistsError:
+            return serialization.load_pem_private_key(path.read_bytes(), password=None)
 
     def public_key_b64(self) -> str:
         der = self._public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)

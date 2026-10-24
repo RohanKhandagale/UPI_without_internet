@@ -5,5 +5,5 @@ __pycache__/
 venv/
 .env
 instance/
-upi_mesh.db
+upi_network.db
 *.sqlite3

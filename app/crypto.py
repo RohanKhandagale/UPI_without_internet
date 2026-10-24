@@ -1,35 +1,55 @@
-"""Hybrid packet encryption: RSA-OAEP wraps a per-packet AES-256-GCM key."""
-import base64, hashlib, json, os
-from pathlib import Path
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+"""RSA-OAEP + AES-256-GCM hybrid encryption used by the demo."""
+import base64
+import hashlib
+import json
+import os
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-KEY_DIR = Path("instance")
-PRIVATE_KEY_PATH = KEY_DIR / "server_private.pem"
-PUBLIC_KEY_PATH = KEY_DIR / "server_public.pem"
+RSA_KEY_BYTES = 256
+IV_BYTES = 12
 
 class HybridCrypto:
     def __init__(self):
-        KEY_DIR.mkdir(exist_ok=True)
-        if PRIVATE_KEY_PATH.exists():
-            self.private_key = serialization.load_pem_private_key(PRIVATE_KEY_PATH.read_bytes(), password=None)
-        else:
-            self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            PRIVATE_KEY_PATH.write_bytes(self.private_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-            try: PRIVATE_KEY_PATH.chmod(0o600)
-            except OSError: pass
-        PUBLIC_KEY_PATH.write_bytes(self.private_key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+        self._private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self._public_key = self._private_key.public_key()
+
+    def public_key_b64(self) -> str:
+        der = self._public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        return base64.b64encode(der).decode("ascii")
+
     def encrypt(self, instruction: dict) -> str:
-        key = AESGCM.generate_key(bit_length=256); nonce = os.urandom(12)
-        encrypted = AESGCM(key).encrypt(nonce, json.dumps(instruction,separators=(",",":")).encode(), None)
-        wrapped = self.private_key.public_key().encrypt(key, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-        return base64.b64encode(wrapped + nonce + encrypted).decode()
-    def decrypt(self, encoded: str) -> dict:
-        raw = base64.b64decode(encoded, validate=True)
-        if len(raw) < 256 + 12 + 16: raise ValueError("ciphertext_too_short")
-        key = self.private_key.decrypt(raw[:256], padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-        return json.loads(AESGCM(key).decrypt(raw[256:268], raw[268:], None))
+        plaintext = json.dumps(instruction, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        aes_key = AESGCM.generate_key(bit_length=256)
+        iv = os.urandom(IV_BYTES)
+        encrypted_payload = AESGCM(aes_key).encrypt(iv, plaintext, None)
+        wrapped_key = self._public_key.encrypt(
+            aes_key,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+        )
+        return base64.b64encode(wrapped_key + iv + encrypted_payload).decode("ascii")
+
+    def decrypt(self, ciphertext_b64: str) -> dict:
+        try:
+            raw = base64.b64decode(ciphertext_b64, validate=True)
+            if len(raw) < RSA_KEY_BYTES + IV_BYTES + 16:
+                raise ValueError("ciphertext_too_short")
+            wrapped_key = raw[:RSA_KEY_BYTES]
+            iv = raw[RSA_KEY_BYTES:RSA_KEY_BYTES + IV_BYTES]
+            encrypted_payload = raw[RSA_KEY_BYTES + IV_BYTES:]
+            aes_key = self._private_key.decrypt(
+                wrapped_key,
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+            )
+            plaintext = AESGCM(aes_key).decrypt(iv, encrypted_payload, None)
+            value = json.loads(plaintext.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("payload_not_object")
+            return value
+        except Exception as exc:
+            raise ValueError("decryption_failed") from exc
+
     @staticmethod
-    def hash_ciphertext(ciphertext: str) -> str:
-        return hashlib.sha256(ciphertext.encode()).hexdigest()
+    def hash_ciphertext(ciphertext_b64: str) -> str:
+        return hashlib.sha256(ciphertext_b64.encode("utf-8")).hexdigest()

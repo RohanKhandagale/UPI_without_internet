@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import contextmanager, closing
 from pathlib import Path
 
-DEFAULT_DB = os.getenv("UPI_MESH_DB_PATH", "upi_mesh.db")
+DEFAULT_DB = os.getenv("UPI_NETWORK_DB_PATH", "upi_network.db")
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
